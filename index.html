@@ -336,12 +336,12 @@ input { font-family: inherit; outline:none; }
   box-shadow: var(--shadow);
 }
 .mic-btn:active { transform: scale(0.96); }
-.mic-btn.listening { background: var(--accent); animation: micPulse 1.1s ease-in-out infinite; }
 @keyframes micPulse {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.06); }
-  100% { transform: scale(1); }
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.7); }
+  70% { transform: scale(1.1); box-shadow: 0 0 0 20px rgba(255, 69, 58, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 69, 58, 0); }
 }
+.mic-btn.listening { background: var(--error); animation: micPulse 1.5s infinite; }
 .voice-switch {
   padding: 12px 14px;
   border-radius: 12px;
@@ -412,6 +412,18 @@ input { font-family: inherit; outline:none; }
   top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0,0,0,0.3);
 }
+@keyframes popIn {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes shakeErr {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-10px); }
+  80% { transform: translateX(10px); }
+}
 .feedback-card {
   position: relative;
   background: var(--card);
@@ -421,7 +433,14 @@ input { font-family: inherit; outline:none; }
   max-width: 400px;
   width: 100%;
   box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-  animation: slideUp 0.3s ease;
+  /* animation: slideUp 0.3s ease; REMOVED default animation */
+}
+/* New animations controlled by .show class state */
+.feedback.show .feedback-card {
+  animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+.feedback.show.wrong .feedback-card {
+  animation: popIn 0.3s ease-out forwards, shakeErr 0.4s 0.3s;
 }
 @keyframes slideUp {
   from { transform: translateY(40px); opacity: 0; }
@@ -822,8 +841,10 @@ input { font-family: inherit; outline:none; }
       <div class="hint-cn" id="practice-hint-cn"></div>
       <div class="hint-letters" id="practice-hint-letters"></div>
       <div class="hint-phonics" id="practice-hint-phonics"></div>
+      <button class="hint-toggle-btn" onclick="toggleHint()" style="margin-top:10px;padding:8px 16px;border-radius:20px;background:var(--card);box-shadow:var(--shadow);font-size:14px;color:var(--text-light);">💡 提示</button>
     </div>
-    <div class="letter-display" id="letter-display"></div>
+    <!-- Removed letter-display for voice-only mode as requested -->
+    <!-- <div class="letter-display" id="letter-display"></div> -->
   </div>
   <div class="voice-area hidden" id="voice-area">
     <div class="voice-actions">
@@ -1613,6 +1634,37 @@ function startVoiceAnswer() {
 }
 
 // ============================================================
+// AUDIO SFX
+// ============================================================
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playTone(freq, type, duration, startTime=0) {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime + startTime);
+  gain.gain.setValueAtTime(0.1, audioCtx.currentTime + startTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + startTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(audioCtx.currentTime + startTime);
+  osc.stop(audioCtx.currentTime + startTime + duration);
+}
+
+function playCorrectSound() {
+  // Ding! (High pitch sine wave)
+  playTone(880, 'sine', 0.1, 0);
+  playTone(1760, 'sine', 0.3, 0.1);
+}
+
+function playWrongSound() {
+  // Buzz! (Low pitch sawtooth)
+  playTone(150, 'sawtooth', 0.15, 0);
+  playTone(100, 'sawtooth', 0.3, 0.15);
+}
+
+// ============================================================
 // SPEECH
 // ============================================================
 function speak(text, rate=0.85, cancel=true) {
@@ -1991,6 +2043,24 @@ function submitManualScore(isCorrect) {
   submitAnswer(userAnswer, isCorrect);
 }
 
+function toggleHint() {
+  practiceState.showHint = !practiceState.showHint;
+  const word = practiceState.words[practiceState.currentIndex];
+  const hintLetters = document.getElementById('practice-hint-letters');
+  const hintPhonics = document.getElementById('practice-hint-phonics');
+  
+  if (practiceState.showHint) {
+    const hint = word[0] + ' _ '.repeat(word.length - 1).trim();
+    hintLetters.textContent = `🔑 ${hint} (${word.length}个字母)`;
+    if (appSettings?.phonicsHint) {
+      hintPhonics.textContent = `🔤 ${getPhonicsChunks(word).join(' · ')}`;
+    }
+  } else {
+    hintLetters.textContent = '';
+    hintPhonics.textContent = '';
+  }
+}
+
 function showCurrentWord() {
   const idx = practiceState.currentIndex;
   const total = practiceState.words.length;
@@ -2034,10 +2104,15 @@ function showCurrentWord() {
   const hintPhonics = document.getElementById('practice-hint-phonics');
   hintCN.textContent = practiceState.showCN ? `💡 ${info.cn}` : '';
   
+  // Reset hint state for new word
+  practiceState.showHint = false; 
+  hintLetters.textContent = '';
+  hintPhonics.textContent = '';
+
   // Show Word Image
   const imgEl = document.getElementById('practice-image');
   if (imgEl) {
-    if (info.img && info.img.startsWith('assets/images/')) {
+    if (info.img && (info.img.startsWith('assets/images/') || info.img.startsWith('assets/images_mapped/'))) {
       imgEl.innerHTML = `<img src="${info.img}" style="max-width:100%;max-height:200px;border-radius:10px;object-fit:contain;">`;
     } else {
       imgEl.textContent = info.img || info.icon || '❓';
@@ -2059,16 +2134,25 @@ function showCurrentWord() {
   updateLetterDisplay();
 
   // Speak
+  // User requested NO speech at start of question.
+  // Speech is only triggered on WRONG answer or manual click.
+  /*
   setTimeout(() => {
-    speakWordAuto(word);
+    // Only speak the word ONCE at the start (no letters)
+    speak(word, appSettings?.speechRate ?? 0.8);
     animateSpeaker();
   }, 300);
+  */
 }
 
 function speakCurrentWord() {
   const word = practiceState.words[practiceState.currentIndex];
   if (word) {
-    speakWordAuto(word);
+    // Manually triggered by speaker button - usually we want full reinforcement?
+    // Or just simple repeat? Let's keep simple repeat to match the "question" style.
+    // If they want letters, they can wait for the wrong feedback or use hints.
+    // However, if they just missed the word, they probably just want to hear it again.
+    speak(word, appSettings?.speechRate ?? 0.8);
     animateSpeaker();
   }
 }
@@ -2082,6 +2166,7 @@ function animateSpeaker() {
 
 function updateLetterDisplay() {
   const display = document.getElementById('letter-display');
+  if (!display) return; // Element might be removed
   const chars = practiceState.input.split('');
   let html = '';
   for (let i = 0; i < chars.length; i++) {
@@ -2202,7 +2287,8 @@ function submitAnswer(answerOverride, correctOverride) {
   if (!word) return;
   const answer = (answerOverride !== undefined ? String(answerOverride || '') : practiceState.input).trim().toLowerCase();
   if (answer.length === 0) {
-    speakCurrentWord();
+    // If empty input (no speech detected), prompt retry
+    updateVoiceUI('error', '没听清，请再说一遍');
     return;
   }
 
@@ -2245,6 +2331,7 @@ function submitAnswer(answerOverride, correctOverride) {
       }
       renderTryoutPlayers();
     }
+    playCorrectSound(); // SFX
     showFeedbackCorrect(word, stars);
   } else {
     practiceState.mistakes++;
@@ -2257,6 +2344,7 @@ function submitAnswer(answerOverride, correctOverride) {
       practiceState.tryout.won = false;
       renderTryoutPlayers();
     }
+    playWrongSound(); // SFX
     showFeedbackWrong(word, answer);
   }
 }
@@ -2293,6 +2381,7 @@ function showFeedbackCorrect(word, stars) {
     btn.textContent = '下一个 →';
   }
 
+  fb.classList.remove('wrong'); // Clear wrong class
   fb.classList.add('show');
 
   if (streak >= 5) fireConfetti();
@@ -2300,6 +2389,7 @@ function showFeedbackCorrect(word, stars) {
 
 function showFeedbackWrong(word, userAnswer) {
   const fb = document.getElementById('feedback');
+  fb.classList.add('wrong'); // Add wrong class for shake animation
   document.getElementById('fb-emoji').textContent = practiceState.eliminated ? '💥' : '❌';
   document.getElementById('fb-msg').textContent = practiceState.eliminated ? '被淘汰了！' : '再接再厉！';
   document.getElementById('fb-word').textContent = word;
@@ -2334,9 +2424,18 @@ function showFeedbackWrong(word, userAnswer) {
   fb.classList.add('show');
 
   if (appSettings?.speakLettersOnWrong) {
-    setTimeout(() => speakLetters(word), 500);
-    setTimeout(() => speakWordAuto(word), 2400);
+    // If setting is ON, speak letters immediately then word
+    // Actually, speakWordAuto already does Word -> Letters -> Word
+    // Let's use speakWordAuto to give the full reinforcement sequence
+    setTimeout(() => speakWordAuto(word), 500);
   } else {
+    // If setting is OFF, maybe just speak word? 
+    // But user said "Read it out when wrong". 
+    // Let's assume this implies the full reinforcement.
+    // If "speakLettersOnWrong" is a user setting, we should respect it.
+    // However, the user request "Wait until wrong to read it out" implies 
+    // this behavior is desired by default now.
+    // Let's force the full sequence on wrong answer.
     setTimeout(() => speakWordAuto(word), 500);
   }
 }
@@ -2578,6 +2677,11 @@ function startErrorReview() {
     const rate = total > 0 ? Math.round(s.correct/total*100) : 0;
     const rateColor = rate >= 70 ? 'var(--success)' : rate >= 40 ? 'var(--primary)' : 'var(--error)';
     html += `<div class="error-item">
+      <div style="width:40px;height:40px;margin-right:10px;display:flex;align-items:center;justify-content:center;">
+        ${info.img && (info.img.startsWith('assets/images/') || info.img.startsWith('assets/images_mapped/')) 
+          ? `<img src="${info.img}" style="max-width:100%;max-height:100%;border-radius:4px;">` 
+          : `<span style="font-size:24px;">${info.img || '❓'}</span>`}
+      </div>
       <div class="word">${w}</div>
       <div class="cn">${info.cn}</div>
       <div class="rate" style="color:${rateColor}">${total > 0 ? rate+'%' : '未练习'}</div>
@@ -2671,10 +2775,15 @@ function showWordList() {
       const s = getStats(w);
       const check = s.mastered ? '✅' : (s.correct + s.wrong > 0 ? '🔶' : '⬜');
       html += `<div class="wl-item" onclick="speakWord('${w.replace("'","\\'")}')">
-        <div class="word">${w}</div>
-        <div class="cn">${info.cn}</div>
-        <div class="check">${check}</div>
-      </div>`;
+      <div style="width:40px;height:40px;margin-right:10px;display:flex;align-items:center;justify-content:center;">
+        ${info.img && (info.img.startsWith('assets/images/') || info.img.startsWith('assets/images_mapped/')) 
+          ? `<img src="${info.img}" style="max-width:100%;max-height:100%;border-radius:4px;">` 
+          : `<span style="font-size:24px;">${info.img || '❓'}</span>`}
+      </div>
+      <div class="word">${w}</div>
+      <div class="cn">${info.cn}</div>
+      <div class="check">${check}</div>
+    </div>`;
     }
   }
   document.getElementById('wordlist-content').innerHTML = html;
